@@ -1,21 +1,59 @@
 {
-  "name": "my-first-extension",
-  "displayName": "My First Extension",
-  "description": "My first VS Code extension",
-  "version": "0.0.1",
+  "name": "supabase-feature-manager",
+  "displayName": "Supabase Feature Manager",
+  "description": "Manage and execute project features from Supabase with Claude Code integration and AI-powered prompt improvements",
+  "version": "1.0.0",
+  "publisher": "your-publisher-name",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/supabase-feature-manager"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "supabase",
+    "features",
+    "claude",
+    "ai",
+    "prompt"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "supabase-features",
+          "title": "Supabase Features",
+          "icon": "media/database-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "supabase-features": [
+        {
+          "type": "webview",
+          "id": "supabaseFeatures.enhancedSidebar",
+          "name": "Features Manager",
+          "icon": "$(code)",
+          "contextualTitle": "Supabase Features Manager"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "my-first-extension.helloWorld",
-        "title": "Hello World"
+        "command": "my-first-extension.login",
+        "title": "Supabase: Login"
+      },
+      {
+        "command": "my-first-extension.refreshFeatures",
+        "title": "Refresh Features"
       }
     ]
   },
@@ -39,5 +77,9 @@
     "glob": "^8.0.3",
     "mocha": "^11.7.5",
     "typescript": "^4.9.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.81.1",
+    "axios": "^1.13.2"
   }
 }

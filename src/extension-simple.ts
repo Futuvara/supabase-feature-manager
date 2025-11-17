@@ -1,7 +1,7 @@
 // The module 'vscode' contains the VS Code extensibility API
 import * as vscode from 'vscode';
 import { AuthWebviewProvider } from './authWebview';
-import { EnhancedSidebarProvider } from './enhancedSidebarProvider';
+import { UnifiedSidebarProvider } from './unifiedSidebarProvider';
 import { SupabaseService } from './supabaseService';
 
 // This method is called when your extension is activated
@@ -11,11 +11,11 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize providers
     const authProvider = new AuthWebviewProvider(context);
     const supabaseService = SupabaseService.getInstance();
-    const sidebarProvider = new EnhancedSidebarProvider(context.extensionUri, context);
+    const sidebarProvider = new UnifiedSidebarProvider(context.extensionUri, context);
 
     // Register webview provider
     const sidebarView = vscode.window.registerWebviewViewProvider(
-        EnhancedSidebarProvider.viewType,
+        UnifiedSidebarProvider.viewType,
         sidebarProvider
     );
 
