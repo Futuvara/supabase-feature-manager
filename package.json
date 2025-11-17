@@ -23,7 +23,9 @@
     "ai",
     "prompt"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:supabaseFeatures.enhancedSidebar"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
