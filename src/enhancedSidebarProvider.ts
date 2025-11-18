@@ -464,6 +464,20 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                 this.chatMessages.push(assistantMessage);
                 this.sendMessage('addChatMessage', { message: assistantMessage });
                 this.sendMessage('updateCurrentOutput', { output: response.data.output_text });
+
+                // Notify about auto-created features
+                if (response.data.features_created && response.data.features_created > 0) {
+                    vscode.window.showInformationMessage(
+                        `Prompt improved! ${response.data.features_created} feature(s) automatically created.`
+                    );
+
+                    // Reload features for current project to show new ones
+                    if (this.currentProjectId) {
+                        await this.loadFeatures(this.currentProjectId);
+                    }
+                } else {
+                    vscode.window.showInformationMessage('Prompt improved successfully!');
+                }
             } else {
                 const errorMsg = response.error || response.message || 'Unknown error';
                 console.error('[EnhancedSidebarProvider] Prompt improvement failed:', errorMsg);

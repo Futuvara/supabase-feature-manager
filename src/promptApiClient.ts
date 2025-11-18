@@ -10,6 +10,7 @@ export interface PromptResponse {
         model_used?: string;
         tokens_used?: number;
         processing_time_ms?: number;
+        features_created?: number;
     };
     error?: string;
     message?: string;
@@ -46,7 +47,7 @@ export class PromptApiClient {
             headers: {
                 'Content-Type': 'application/json'
             },
-            timeout: 15000, // 15 second timeout for production API
+            timeout: 60000, // 60 second timeout for AI processing (Gemini + RAG + feature extraction)
             validateStatus: (status) => status < 500 // Don't reject on 4xx errors
         });
 
@@ -97,22 +98,32 @@ export class PromptApiClient {
             });
 
             // Note: /prompts/improve endpoint (uses Supabase token via unified auth)
-            // Based on common API patterns, try these field names
-            const payload: any = {
-                prompt: inputText,
+            // API expects: inputText (required), projectId (required)
+            // The instruction is read from user's settings in the database, not sent in request
+            const payload = {
+                inputText: inputText,
                 projectId: projectId
             };
-
-            // Add instruction if provided
-            if (instructionTemplate) {
-                payload.systemPrompt = instructionTemplate;
-            }
 
             console.log('[PromptApiClient] Sending payload:', JSON.stringify(payload, null, 2));
 
             const response = await this.api.post('/prompts/improve', payload);
 
             console.log('[PromptApiClient] Improve response:', response.status, response.data);
+
+            // API returns: { success, output, promptId, processingTimeMs, featuresCreated }
+            if (response.data.success) {
+                return {
+                    success: true,
+                    data: {
+                        input_text: inputText,
+                        output_text: response.data.output,
+                        prompt_id: response.data.promptId,
+                        processing_time_ms: response.data.processingTimeMs,
+                        features_created: response.data.featuresCreated
+                    }
+                };
+            }
 
             return response.data;
         } catch (error: any) {
