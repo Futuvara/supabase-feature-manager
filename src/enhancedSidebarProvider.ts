@@ -53,6 +53,14 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
      */
     public async handleAuthSuccess(): Promise<void> {
         console.log('[EnhancedSidebarProvider] Handling auth success');
+
+        // Set Supabase access token for API requests
+        const session = this.authService.state.session;
+        if (session && session.access_token) {
+            this.promptApiClient.setSupabaseAccessToken(session.access_token);
+            console.log('[EnhancedSidebarProvider] API client configured with Supabase token (from handleAuthSuccess)');
+        }
+
         await this.initialize();
     }
 
@@ -210,8 +218,15 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
             // Use AuthService to login
             const result = await this.authService.login(email, password);
 
-            if (result.success) {
+            if (result.success && result.user) {
                 console.log('[EnhancedSidebarProvider] Login successful');
+
+                // Get Supabase access token and configure API client
+                const session = this.authService.state.session;
+                if (session && session.access_token) {
+                    this.promptApiClient.setSupabaseAccessToken(session.access_token);
+                    console.log('[EnhancedSidebarProvider] API client configured with Supabase token');
+                }
 
                 // Show success message
                 if (this._view) {

@@ -32,6 +32,7 @@ export class PromptApiClient {
     private api: AxiosInstance;
     private apiToken: string | undefined;
     private baseUrl: string;
+    private supabaseAccessToken: string | undefined;
 
     constructor(private context: vscode.ExtensionContext) {
         // Read API URL from settings
@@ -53,18 +54,32 @@ export class PromptApiClient {
     }
 
     private async loadApiToken() {
-        // Try to get token from secure storage
+        // Try to get API token from secure storage (for /prompts endpoints only)
         this.apiToken = await this.context.secrets.get('prompt_api_token');
-
-        if (this.apiToken) {
-            this.api.defaults.headers.common['Authorization'] = `Bearer ${this.apiToken}`;
-        }
     }
 
+    /**
+     * Set Supabase access token for API authentication
+     * This is the primary authentication method for the API
+     */
+    public setSupabaseAccessToken(accessToken: string) {
+        this.supabaseAccessToken = accessToken;
+        // Supabase token takes precedence over API token
+        this.api.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+        console.log('[PromptApiClient] Supabase access token set for API requests');
+    }
+
+    /**
+     * Set API token (rqm_*) for specific prompt endpoints
+     */
     public async setApiToken(token: string) {
         this.apiToken = token;
         await this.context.secrets.store('prompt_api_token', token);
-        this.api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+
+        // Only use API token if no Supabase token is set
+        if (!this.supabaseAccessToken) {
+            this.api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+        }
     }
 
     public async improvePrompt(
@@ -147,8 +162,14 @@ export class PromptApiClient {
     }
 
     public async getPromptTemplates(projectId?: string): Promise<PromptTemplate[]> {
+        // Prompt templates require a project ID - return empty if none selected
+        if (!projectId) {
+            console.log('[PromptApiClient] No project selected, skipping prompt templates');
+            return [];
+        }
+
         try {
-            const params = projectId ? { project_id: projectId } : {};
+            const params = { project_id: projectId };
             const response = await this.api.get('/global-prompt-templates', { params });
             console.log('[PromptApiClient] Prompt templates response:', response.status, response.data);
 
