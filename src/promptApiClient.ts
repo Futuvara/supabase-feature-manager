@@ -89,27 +89,52 @@ export class PromptApiClient {
         saveToHistory: boolean = true
     ): Promise<PromptResponse> {
         try {
-            const response = await this.api.post('/prompts/improve', {
-                input_text: inputText,
-                project_id: projectId,
-                instruction_template: instructionTemplate,
-                save_to_history: saveToHistory
+            console.log('[PromptApiClient] Improving prompt:', {
+                inputLength: inputText.length,
+                projectId,
+                hasInstruction: !!instructionTemplate,
+                saveToHistory
             });
+
+            // Note: /prompts/improve endpoint (uses Supabase token via unified auth)
+            // Based on common API patterns, try these field names
+            const payload: any = {
+                prompt: inputText,
+                projectId: projectId
+            };
+
+            // Add instruction if provided
+            if (instructionTemplate) {
+                payload.systemPrompt = instructionTemplate;
+            }
+
+            console.log('[PromptApiClient] Sending payload:', JSON.stringify(payload, null, 2));
+
+            const response = await this.api.post('/prompts/improve', payload);
+
+            console.log('[PromptApiClient] Improve response:', response.status, response.data);
 
             return response.data;
         } catch (error: any) {
+            console.error('[PromptApiClient] Improve prompt error:', {
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                data: error.response?.data,
+                message: error.message
+            });
+
             if (error.response) {
                 return {
                     success: false,
-                    error: error.response.data.error || 'API Error',
-                    message: error.response.data.message || 'Failed to improve prompt'
+                    error: error.response.data?.error || 'API Error',
+                    message: error.response.data?.message || `HTTP ${error.response.status}: ${error.response.statusText}`
                 };
             }
 
             return {
                 success: false,
                 error: 'Network Error',
-                message: error.message
+                message: error.message || 'Failed to connect to API'
             };
         }
     }

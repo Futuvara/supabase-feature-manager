@@ -439,10 +439,12 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
         this.chatMessages.push(userMessage);
         this.sendMessage('addChatMessage', { message: userMessage });
 
-        // Process with API if token is configured
-        if (this.promptApiClient.hasApiToken()) {
+        // Process with API (Supabase token is automatically set after login)
+        try {
             const instruction = this.currentInstruction?.content ||
                 'Improve the grammar and clarity of the following prompt. Make it more professional and detailed.';
+
+            console.log('[EnhancedSidebarProvider] Improving prompt with instruction:', instruction);
 
             const response = await this.promptApiClient.improvePrompt(
                 message,
@@ -450,6 +452,8 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                 instruction,
                 true
             );
+
+            console.log('[EnhancedSidebarProvider] Prompt improvement response:', response);
 
             if (response.success && response.data) {
                 const assistantMessage: ChatMessage = {
@@ -461,10 +465,32 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                 this.sendMessage('addChatMessage', { message: assistantMessage });
                 this.sendMessage('updateCurrentOutput', { output: response.data.output_text });
             } else {
-                vscode.window.showErrorMessage(`Failed to improve prompt: ${response.message}`);
+                const errorMsg = response.error || response.message || 'Unknown error';
+                console.error('[EnhancedSidebarProvider] Prompt improvement failed:', errorMsg);
+                vscode.window.showErrorMessage(`Failed to improve prompt: ${errorMsg}`);
+
+                // Add error message to chat
+                const errorMessage: ChatMessage = {
+                    role: 'assistant',
+                    content: `❌ Error: ${errorMsg}`,
+                    timestamp: new Date()
+                };
+                this.chatMessages.push(errorMessage);
+                this.sendMessage('addChatMessage', { message: errorMessage });
             }
-        } else {
-            vscode.window.showWarningMessage('API token not configured. Please configure in settings.');
+        } catch (error: any) {
+            const errorMsg = error.message || 'Unknown error occurred';
+            console.error('[EnhancedSidebarProvider] Exception during prompt improvement:', error);
+            vscode.window.showErrorMessage(`Failed to improve prompt: ${errorMsg}`);
+
+            // Add error message to chat
+            const errorMessage: ChatMessage = {
+                role: 'assistant',
+                content: `❌ Error: ${errorMsg}. Check console for details.`,
+                timestamp: new Date()
+            };
+            this.chatMessages.push(errorMessage);
+            this.sendMessage('addChatMessage', { message: errorMessage });
         }
     }
 
@@ -1410,7 +1436,8 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                         <button type="button" id="saveApiTokenButton" class="secondary">Save</button>
                                     </div>
                                     <p class="help-text" style="margin-top: 5px; font-size: 10px;">
-                                        Token is stored securely and used for AI-powered prompt improvements.
+                                        Token (format: rqm_...) is required for AI prompt improvements via /v1/prompts/improve endpoint.
+                                        Stored securely in VS Code secrets.
                                     </p>
                                 </div>
                                 <div class="form-group">
