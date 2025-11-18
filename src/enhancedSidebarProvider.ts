@@ -520,8 +520,41 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        // This would integrate with your Supabase features table
-        vscode.window.showInformationMessage('Feature added successfully');
+        if (!content || content.trim().length === 0) {
+            vscode.window.showErrorMessage('No content to add as feature');
+            return;
+        }
+
+        try {
+            // Ask user for feature title
+            const title = await vscode.window.showInputBox({
+                prompt: 'Enter a title for this feature',
+                placeHolder: 'e.g., User Authentication System',
+                validateInput: (value) => {
+                    if (!value || value.trim().length === 0) {
+                        return 'Title cannot be empty';
+                    }
+                    return null;
+                }
+            });
+
+            if (!title) {
+                return; // User cancelled
+            }
+
+            // Copy feature to clipboard (RLS prevents direct insert)
+            const featureText = `Title: ${title}\n\nDescription:\n${content}`;
+            await vscode.env.clipboard.writeText(featureText);
+
+            vscode.window.showInformationMessage(
+                `Feature content copied to clipboard! Features are automatically created when you improve prompts.`,
+                'OK'
+            );
+
+        } catch (error: any) {
+            console.error('[EnhancedSidebarProvider] Exception adding feature:', error);
+            vscode.window.showErrorMessage(`Failed to add feature: ${error.message}`);
+        }
     }
 
     private async executePromptOnCode(content: string) {
