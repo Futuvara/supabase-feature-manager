@@ -34,12 +34,19 @@ export class PromptApiClient {
     private baseUrl: string;
 
     constructor(private context: vscode.ExtensionContext) {
-        this.baseUrl = 'http://localhost:3000/api/v1'; // Default, can be configured
+        // Read API URL from settings
+        const config = vscode.workspace.getConfiguration('supabaseFeatures');
+        this.baseUrl = config.get('apiBaseUrl') || 'https://requ.futuvara.com/api';
+
+        console.log('[PromptApiClient] Initializing with API URL:', this.baseUrl);
+
         this.api = axios.create({
             baseURL: this.baseUrl,
             headers: {
                 'Content-Type': 'application/json'
-            }
+            },
+            timeout: 15000, // 15 second timeout for production API
+            validateStatus: (status) => status < 500 // Don't reject on 4xx errors
         });
 
         this.loadApiToken();
@@ -117,63 +124,49 @@ export class PromptApiClient {
 
     public async getInstructionTemplates(): Promise<InstructionTemplate[]> {
         try {
-            const response = await this.api.get('/templates/instructions');
-            if (response.data && response.data.success) {
+            const response = await this.api.get('/instruction-templates');
+            console.log('[PromptApiClient] Instruction templates response:', response.status, response.data);
+
+            if (response.data && Array.isArray(response.data)) {
+                // Direct array response
+                return response.data.map(t => ({
+                    id: t.id,
+                    name: t.name,
+                    content: t.content,
+                    is_default: t.is_default
+                }));
+            } else if (response.data && response.data.success) {
+                // Wrapped in success object
                 return response.data.data || [];
             }
             return [];
         } catch (error: any) {
-            console.error('Failed to fetch instruction templates:', error);
-            // Return default templates as fallback
-            return [
-                {
-                    id: '1',
-                    name: 'Default Improvement',
-                    content: 'Improve the grammar and clarity of the following prompt. Make it more professional and detailed.',
-                    is_default: true
-                },
-                {
-                    id: '2',
-                    name: 'Technical Spec',
-                    content: 'Transform this into a detailed technical specification with acceptance criteria, architecture considerations, and testing requirements.'
-                },
-                {
-                    id: '3',
-                    name: 'User Story',
-                    content: 'Convert this into a user story format with clear acceptance criteria and definition of done.'
-                }
-            ];
+            console.error('Failed to fetch instruction templates:', error.message);
+            throw new Error('API connection failed: ' + (error.message || 'Unable to reach server'));
         }
     }
 
     public async getPromptTemplates(projectId?: string): Promise<PromptTemplate[]> {
         try {
             const params = projectId ? { project_id: projectId } : {};
-            const response = await this.api.get('/templates/prompts', { params });
-            if (response.data && response.data.success) {
+            const response = await this.api.get('/global-prompt-templates', { params });
+            console.log('[PromptApiClient] Prompt templates response:', response.status, response.data);
+
+            if (response.data && Array.isArray(response.data)) {
+                // Direct array response
+                return response.data.map(t => ({
+                    id: t.id,
+                    name: t.name,
+                    template_content: t.template_content || t.content
+                }));
+            } else if (response.data && response.data.success) {
+                // Wrapped in success object
                 return response.data.data || [];
             }
             return [];
         } catch (error: any) {
-            console.error('Failed to fetch prompt templates:', error);
-            // Return default templates as fallback
-            return [
-                {
-                    id: '1',
-                    name: 'Bug Report',
-                    template_content: 'I found a bug in [component]. When I [action], it [unexpected behavior] instead of [expected behavior].'
-                },
-                {
-                    id: '2',
-                    name: 'Feature Request',
-                    template_content: 'Add [feature] to [component] that allows users to [capability].'
-                },
-                {
-                    id: '3',
-                    name: 'Code Review',
-                    template_content: 'Review the [component/file] for [specific concerns like performance, security, best practices].'
-                }
-            ];
+            console.error('Failed to fetch prompt templates:', error.message);
+            throw new Error('API connection failed: ' + (error.message || 'Unable to reach server'));
         }
     }
 

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SupabaseService, Project, Feature } from './supabaseService';
 import { PromptApiClient, InstructionTemplate, PromptTemplate } from './promptApiClient';
+import { AuthService } from './authService';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -18,6 +19,7 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private supabaseService: SupabaseService;
     private promptApiClient: PromptApiClient;
+    private authService: AuthService;
 
     // Feature tab data
     private projects: Project[] = [];
@@ -38,10 +40,44 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
-        private readonly context: vscode.ExtensionContext
+        private readonly context: vscode.ExtensionContext,
+        authService: AuthService
     ) {
         this.supabaseService = SupabaseService.getInstance();
         this.promptApiClient = new PromptApiClient(context);
+        this.authService = authService;
+    }
+
+    /**
+     * Handle successful authentication
+     */
+    public async handleAuthSuccess(): Promise<void> {
+        console.log('[EnhancedSidebarProvider] Handling auth success');
+        await this.initialize();
+    }
+
+    /**
+     * Handle authentication required (logout or session expired)
+     */
+    public handleAuthRequired(): void {
+        console.log('[EnhancedSidebarProvider] Auth required');
+        this.projects = [];
+        this.features = [];
+        this.currentProjectId = undefined;
+
+        if (this._view) {
+            this._view.webview.postMessage({ type: 'requireLogin' });
+        }
+    }
+
+    /**
+     * Focus the login input field
+     */
+    public focusLoginInput(): void {
+        if (this._view) {
+            this._view.show(true); // true = preserve focus
+            this._view.webview.postMessage({ type: 'focusLogin' });
+        }
     }
 
     public resolveWebviewView(
@@ -71,7 +107,7 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
 
                 // Feature tab actions
                 case 'login':
-                    await this.handleLogin();
+                    await this.handleLogin(data.email, data.password);
                     break;
                 case 'logout':
                     await this.handleLogout();
@@ -113,6 +149,12 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                 case 'configureApiToken':
                     await this.configureApiToken();
                     break;
+                case 'saveApiToken':
+                    await this.saveApiToken(data.token);
+                    break;
+                case 'testApiToken':
+                    await this.testApiConnection();
+                    break;
             }
         });
 
@@ -121,11 +163,14 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     private async initialize() {
-        const user = await this.supabaseService.getCurrentUser();
+        console.log('[EnhancedSidebarProvider] Initializing...');
 
-        if (user) {
+        // Check auth state from AuthService
+        if (this.authService.isAuthenticated) {
+            console.log('[EnhancedSidebarProvider] User is authenticated, loading projects');
             await this.loadProjects();
         } else {
+            console.log('[EnhancedSidebarProvider] User not authenticated, showing login');
             // Show login state
             if (this._view) {
                 this._view.webview.postMessage({
@@ -150,29 +195,96 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
         // Could add analytics or state management here
     }
 
-    private async handleLogin() {
-        vscode.commands.executeCommand('my-first-extension.login');
+    private async handleLogin(email: string, password: string) {
+        console.log('[EnhancedSidebarProvider] handleLogin called for:', email);
+
+        // Show loading state
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'loginLoading',
+                loading: true
+            });
+        }
+
+        try {
+            // Use AuthService to login
+            const result = await this.authService.login(email, password);
+
+            if (result.success) {
+                console.log('[EnhancedSidebarProvider] Login successful');
+
+                // Show success message
+                if (this._view) {
+                    this._view.webview.postMessage({
+                        type: 'loginSuccess'
+                    });
+                }
+
+                // Immediately load projects after successful login
+                await this.loadProjects();
+                await this.loadPromptTemplates();
+
+                console.log('[EnhancedSidebarProvider] Projects loaded after login');
+            }
+        } catch (error: any) {
+            console.error('[EnhancedSidebarProvider] Login error:', error);
+
+            // Send error to webview
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'loginError',
+                    error: error.userMessage || error.message || 'Login failed. Please try again.'
+                });
+            }
+        } finally {
+            // Hide loading state
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'loginLoading',
+                    loading: false
+                });
+            }
+        }
     }
 
     private async handleLogout() {
-        try {
-            await this.supabaseService.signOut();
-            await this.context.secrets.delete('supabase_email');
-            await this.context.secrets.delete('supabase_password');
+        console.log('[EnhancedSidebarProvider] handleLogout called');
 
+        try {
+            // Use AuthService to logout (handles session cleanup)
+            await this.authService.logout();
+
+            // Clear all local state
             this.projects = [];
             this.features = [];
             this.currentProjectId = undefined;
+            this.chatMessages = [];
+            this.currentInstruction = undefined;
+            this.currentPromptTemplate = undefined;
 
+            // Optionally clear API token (ask user)
+            const clearApiToken = await vscode.window.showQuickPick(
+                ['Yes', 'No'],
+                {
+                    placeHolder: 'Also clear AI API token?',
+                    ignoreFocusOut: true
+                }
+            );
+
+            if (clearApiToken === 'Yes') {
+                await this.context.secrets.delete('prompt_api_token');
+                this.promptApiClient = new PromptApiClient(this.context);
+            }
+
+            // Send message to webview to reset all UI state
             if (this._view) {
                 this._view.webview.postMessage({
-                    type: 'requireLogin'
+                    type: 'resetAllState'
                 });
             }
 
-            vscode.window.showInformationMessage('Logged out successfully');
         } catch (error: any) {
-            console.error('Logout error:', error);
+            console.error('[EnhancedSidebarProvider] Logout error:', error);
             vscode.window.showErrorMessage(`Failed to logout: ${error.message}`);
         }
     }
@@ -235,35 +347,49 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     private async loadPromptTemplates() {
+        console.log('[EnhancedSidebarProvider] Loading prompt templates...');
+
         // Load templates from API
         try {
             // Fetch instruction templates from API
             this.instructionTemplates = await this.promptApiClient.getInstructionTemplates();
+            console.log('[EnhancedSidebarProvider] Instruction templates loaded:', this.instructionTemplates.length);
 
             // Fetch prompt templates from API (optionally filtered by project)
             this.promptTemplates = await this.promptApiClient.getPromptTemplates(this.currentProjectId);
+            console.log('[EnhancedSidebarProvider] Prompt templates loaded:', this.promptTemplates.length);
 
             // Send templates to webview
             this.sendMessage('updatePromptTemplates', { templates: this.promptTemplates });
             this.sendMessage('updateInstructionTemplates', { templates: this.instructionTemplates });
+            console.log('[EnhancedSidebarProvider] Templates sent to webview');
         } catch (error: any) {
-            console.error('Failed to load templates:', error);
+            console.error('[EnhancedSidebarProvider] Failed to load templates from API:', error.message);
 
-            // Use fallback templates if API fails
-            this.instructionTemplates = [
-                { id: '1', name: 'Default Improvement', content: 'Improve the grammar and clarity of the following prompt. Make it more professional and detailed.' },
-                { id: '2', name: 'Technical Spec', content: 'Transform this into a detailed technical specification with acceptance criteria, architecture considerations, and testing requirements.' },
-                { id: '3', name: 'User Story', content: 'Convert this into a user story format with clear acceptance criteria and definition of done.' }
-            ];
+            // Show error to user - don't hide API issues with fallbacks
+            const errorMessage = error.message || 'Unable to connect to API server';
 
-            this.promptTemplates = [
-                { id: '1', name: 'Bug Report', template_content: 'I found a bug in [component]. When I [action], it [unexpected behavior] instead of [expected behavior].' },
-                { id: '2', name: 'Feature Request', template_content: 'Add [feature] to [component] that allows users to [capability].' },
-                { id: '3', name: 'Code Review', template_content: 'Review the [component/file] for [specific concerns like performance, security, best practices].' }
-            ];
+            vscode.window.showErrorMessage(
+                `Failed to load templates: ${errorMessage}. Please check your API configuration in settings.`,
+                'Open Settings',
+                'Dismiss'
+            ).then(action => {
+                if (action === 'Open Settings') {
+                    vscode.commands.executeCommand('workbench.action.openSettings', 'supabaseFeatures');
+                }
+            });
 
-            this.sendMessage('updatePromptTemplates', { templates: this.promptTemplates });
-            this.sendMessage('updateInstructionTemplates', { templates: this.instructionTemplates });
+            // Send empty templates to clear dropdowns
+            this.instructionTemplates = [];
+            this.promptTemplates = [];
+
+            this.sendMessage('updatePromptTemplates', { templates: [] });
+            this.sendMessage('updateInstructionTemplates', { templates: [] });
+
+            // Show API configuration error in UI
+            this.sendMessage('showApiError', {
+                message: 'API server unreachable. Configure API settings or check your connection.'
+            });
         }
     }
 
@@ -418,6 +544,69 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
             // Load API projects and templates after token is configured
             await this.loadApiProjects();
             await this.loadPromptTemplates();
+        }
+    }
+
+    private async saveApiToken(token: string) {
+        console.log('[EnhancedSidebarProvider] Saving API token');
+
+        try {
+            // Validate token format
+            if (!token.startsWith('rqm_')) {
+                this.sendMessage('apiTokenTestResult', {
+                    success: false,
+                    message: 'Invalid token format. Token should start with "rqm_"'
+                });
+                return;
+            }
+
+            // Save token
+            await this.promptApiClient.setApiToken(token);
+
+            // Reload templates and projects with new token
+            await this.loadPromptTemplates();
+            await this.loadApiProjects();
+
+            vscode.window.showInformationMessage('API token saved successfully');
+            this.sendMessage('apiTokenSaved', { success: true });
+
+            // Hide warning banner if shown
+            this.sendMessage('hideApiWarning', {});
+
+        } catch (error: any) {
+            console.error('[EnhancedSidebarProvider] Error saving API token:', error);
+            this.sendMessage('apiTokenTestResult', {
+                success: false,
+                message: 'Failed to save token: ' + error.message
+            });
+        }
+    }
+
+    private async testApiConnection() {
+        console.log('[EnhancedSidebarProvider] Testing API connection');
+
+        try {
+            // Try to load templates to test connection
+            const templates = await this.promptApiClient.getInstructionTemplates();
+
+            if (templates && templates.length > 0) {
+                this.sendMessage('apiTokenTestResult', {
+                    success: true,
+                    message: `✓ Connection successful! Found ${templates.length} instruction templates.`
+                });
+                vscode.window.showInformationMessage('API connection successful!');
+            } else {
+                this.sendMessage('apiTokenTestResult', {
+                    success: false,
+                    message: 'Connection successful but no templates found. Check API configuration.'
+                });
+            }
+        } catch (error: any) {
+            console.error('[EnhancedSidebarProvider] API connection test failed:', error);
+            this.sendMessage('apiTokenTestResult', {
+                success: false,
+                message: 'Connection failed: ' + (error.message || 'Unknown error')
+            });
         }
     }
 
@@ -822,28 +1011,159 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                         font-size: 12px;
                     }
 
-                    .login-container {
+                    .settings-section {
+                        margin-bottom: 15px;
+                        border: 1px solid var(--vscode-panel-border);
+                        border-radius: 2px;
+                        padding: 0;
+                    }
+
+                    .settings-header {
+                        padding: 8px 12px;
+                        background-color: var(--vscode-sideBar-background);
+                        cursor: pointer;
+                        user-select: none;
+                        font-size: 12px;
+                        font-weight: 500;
+                        list-style: none;
+                    }
+
+                    .settings-header:hover {
+                        background-color: var(--vscode-list-hoverBackground);
+                    }
+
+                    .settings-header::-webkit-details-marker {
                         display: none;
+                    }
+
+                    .settings-content {
+                        padding: 12px;
+                        background-color: var(--vscode-editor-background);
+                    }
+
+                    .input-with-button {
+                        display: flex;
+                        gap: 8px;
+                        align-items: stretch;
+                    }
+
+                    .input-with-button input {
+                        flex: 1;
+                    }
+
+                    .input-with-button button {
+                        flex-shrink: 0;
+                        min-width: 60px;
+                    }
+
+                    .status-message {
+                        padding: 8px;
+                        border-radius: 2px;
+                        font-size: 12px;
+                        margin-top: 10px;
+                    }
+
+                    .status-message.success {
+                        background-color: var(--vscode-testing-iconPassed);
+                        color: var(--vscode-editor-background);
+                    }
+
+                    .status-message.error {
+                        background-color: var(--vscode-inputValidation-errorBackground);
+                        border: 1px solid var(--vscode-inputValidation-errorBorder);
+                        color: var(--vscode-inputValidation-errorForeground);
+                    }
+
+                    .login-container {
+                        display: flex;
                         flex-direction: column;
                         justify-content: center;
                         align-items: center;
                         height: 100%;
-                        text-align: center;
                         padding: 20px;
+                        max-width: 400px;
+                        margin: 0 auto;
                     }
 
-                    .login-container.active {
-                        display: flex;
+                    .login-container.hidden {
+                        display: none !important;
+                    }
+
+                    #loginForm {
+                        width: 100%;
+                    }
+
+                    .form-group {
+                        margin-bottom: 15px;
+                        text-align: left;
+                        width: 100%;
+                    }
+
+                    .form-group label {
+                        display: block;
+                        margin-bottom: 5px;
+                        font-weight: 500;
+                        color: var(--vscode-foreground);
+                        font-size: 12px;
+                    }
+
+                    .form-group input {
+                        width: 100%;
+                        padding: 8px;
+                        background-color: var(--vscode-input-background);
+                        color: var(--vscode-input-foreground);
+                        border: 1px solid var(--vscode-input-border);
+                        border-radius: 2px;
+                        font-size: 13px;
+                        box-sizing: border-box;
+                    }
+
+                    .form-group input:focus {
+                        outline: 1px solid var(--vscode-focusBorder);
+                        outline-offset: -1px;
+                    }
+
+                    .error-message {
+                        background-color: var(--vscode-inputValidation-errorBackground);
+                        border: 1px solid var(--vscode-inputValidation-errorBorder);
+                        color: var(--vscode-inputValidation-errorForeground);
+                        padding: 8px;
+                        margin-bottom: 15px;
+                        border-radius: 2px;
+                        font-size: 12px;
+                        text-align: left;
+                    }
+
+                    .help-text {
+                        text-align: center;
+                        font-size: 11px;
+                        color: var(--vscode-descriptionForeground);
+                        line-height: 1.4;
+                    }
+
+                    #loginButton {
+                        width: 100%;
+                        position: relative;
+                        padding: 10px;
+                    }
+
+                    #loginButton .spinner {
+                        margin-left: 8px;
+                    }
+
+                    #loginButton:disabled {
+                        opacity: 0.6;
+                        cursor: not-allowed;
                     }
 
                     .main-container {
-                        display: flex;
+                        display: none;
                         flex-direction: column;
                         height: 100%;
                     }
 
-                    .main-container.hidden {
-                        display: none;
+                    .main-container.active {
+                        display: flex;
                     }
 
                     /* Make chat messages responsive */
@@ -978,22 +1298,56 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
             </head>
             <body>
                 <div class="login-container" id="loginContainer">
-                    <p style="margin-bottom: 20px;">Please login to access your projects and features</p>
-                    <button onclick="login()">Login to Supabase</button>
+                    <h3 style="margin-top: 0; margin-bottom: 20px;">Login to Supabase</h3>
+
+                    <form id="loginForm">
+                        <div class="form-group">
+                            <label for="emailInput">Email</label>
+                            <input
+                                type="email"
+                                id="emailInput"
+                                placeholder="your.email@example.com"
+                                required
+                                autocomplete="email"
+                            />
+                        </div>
+
+                        <div class="form-group">
+                            <label for="passwordInput">Password</label>
+                            <input
+                                type="password"
+                                id="passwordInput"
+                                placeholder="Enter your password"
+                                required
+                                autocomplete="current-password"
+                            />
+                        </div>
+
+                        <div id="loginError" class="error-message" style="display: none;"></div>
+
+                        <button type="submit" id="loginButton" class="primary">
+                            <span class="button-text">Login</span>
+                            <span class="spinner" style="display: none;">⏳</span>
+                        </button>
+                    </form>
+
+                    <p class="help-text" style="margin-top: 15px; font-size: 11px; color: var(--vscode-descriptionForeground);">
+                        Your credentials are stored securely using VS Code's encrypted storage.
+                    </p>
                 </div>
 
                 <div class="main-container hidden" id="mainContainer">
                     <!-- Tab buttons -->
                     <div class="tabs-container">
-                        <button class="tab active" id="featureTab" onclick="switchTab('feature')">Feature</button>
-                        <button class="tab" id="promptTab" onclick="switchTab('prompt')">Prompt</button>
+                        <button class="tab active" id="featureTab">Feature</button>
+                        <button class="tab" id="promptTab">Prompt</button>
                     </div>
 
                     <!-- Feature Tab -->
                     <div class="tab-panel active" id="featurePanel">
                         <div class="feature-section">
                             <div class="section-label">Project</div>
-                            <select id="projectSelect" onchange="selectProject()">
+                            <select id="projectSelect">
                                 <option value="">Select a project...</option>
                             </select>
                         </div>
@@ -1013,36 +1367,63 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                             ></textarea>
                         </div>
 
-                        <button class="primary" id="executeFeatureButton" onclick="executeFeaturePrompt()" disabled>
+                        <button class="primary" id="executeFeatureButton" disabled>
                             Execute on code
                         </button>
                     </div>
 
                     <!-- Prompt Tab -->
                     <div class="tab-panel" id="promptPanel">
-                        <button class="new-chat-button" onclick="newChat()">New chat</button>
+                        <button class="new-chat-button" id="newChatButton">New chat</button>
 
                         <div id="apiWarning" class="warning-banner" style="display: none;">
-                            ⚠️ API token not configured. <a href="#" onclick="configureApiToken()">Configure now</a>
+                            ⚠️ API token not configured. <a href="#" id="configureApiLink">Configure now</a>
                         </div>
+
+                        <details class="settings-section">
+                            <summary class="settings-header">⚙️ API Settings</summary>
+                            <div class="settings-content">
+                                <div class="form-group">
+                                    <label for="apiTokenInput">Requirements Management API Token</label>
+                                    <div class="input-with-button">
+                                        <input
+                                            type="password"
+                                            id="apiTokenInput"
+                                            placeholder="rqm_your_token_here"
+                                            autocomplete="off"
+                                        />
+                                        <button type="button" id="saveApiTokenButton" class="secondary">Save</button>
+                                    </div>
+                                    <p class="help-text" style="margin-top: 5px; font-size: 10px;">
+                                        Token is stored securely and used for AI-powered prompt improvements.
+                                    </p>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" id="testApiTokenButton" class="secondary" style="width: 100%;">
+                                        Test API Connection
+                                    </button>
+                                </div>
+                                <div id="apiTokenStatus" class="status-message" style="display: none;"></div>
+                            </div>
+                        </details>
 
                         <div class="prompt-control-section">
                             <div class="section-label">Project</div>
-                            <select id="promptProjectSelect" onchange="selectPromptProject()">
+                            <select id="promptProjectSelect">
                                 <option value="">Select a project...</option>
                             </select>
                         </div>
 
                         <div class="prompt-control-section">
                             <div class="section-label">Instruction</div>
-                            <select id="instructionSelect" onchange="selectInstruction()">
+                            <select id="instructionSelect">
                                 <option value="">Select instruction template...</option>
                             </select>
                         </div>
 
                         <div class="prompt-control-section">
                             <div class="section-label">Prompt Template</div>
-                            <select id="promptTemplateSelect" onchange="selectPromptTemplate()">
+                            <select id="promptTemplateSelect">
                                 <option value="">Select prompt template...</option>
                             </select>
                         </div>
@@ -1069,26 +1450,151 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                 id="messageInput"
                                 class="message-input"
                                 placeholder="Type your message..."
-                                onkeypress="handleMessageKeypress(event)"
                             />
-                            <button class="send-button primary" onclick="sendMessage()">Send</button>
+                            <button class="send-button primary" id="sendButton">Send</button>
                         </div>
 
                         <div class="button-row">
-                            <button class="secondary" onclick="addFeature()">+ Add feature</button>
-                            <button class="primary" onclick="executeOnCode()">Execute on code</button>
+                            <button class="secondary" id="addFeatureButton">+ Add feature</button>
+                            <button class="primary" id="executeOnCodeButton">Execute on code</button>
                         </div>
                     </div>
                 </div>
 
                 <script>
+                    console.log('Webview script starting...');
                     const vscode = acquireVsCodeApi();
+                    console.log('VS Code API acquired:', vscode);
                     let currentTab = 'feature';
                     let selectedFeatureId = null;
                     let currentFeatureName = '';
 
+                    // Setup event listeners immediately (no DOMContentLoaded needed in webviews)
+                    function setupEventListeners() {
+                        console.log('Setting up event listeners...');
+
+                        // Attach event listeners to buttons
+                        // Login form submission
+                        const loginForm = document.getElementById('loginForm');
+                        if (loginForm) {
+                            loginForm.addEventListener('submit', (e) => {
+                                e.preventDefault();
+                                console.log('[Webview] Login form submitted');
+
+                                const emailInput = document.getElementById('emailInput');
+                                const passwordInput = document.getElementById('passwordInput');
+
+                                if (emailInput && passwordInput) {
+                                    const email = emailInput.value.trim();
+                                    const password = passwordInput.value;
+
+                                    if (email && password) {
+                                        login(email, password);
+                                    }
+                                }
+                            });
+                            console.log('[Webview] Login form listener attached');
+                        } else {
+                            console.error('[Webview] Login form not found!');
+                        }
+
+                        const featureTabBtn = document.getElementById('featureTab');
+                        if (featureTabBtn) {
+                            featureTabBtn.addEventListener('click', () => switchTab('feature'));
+                        }
+
+                        const promptTabBtn = document.getElementById('promptTab');
+                        if (promptTabBtn) {
+                            promptTabBtn.addEventListener('click', () => switchTab('prompt'));
+                        }
+
+                        const executeBtn = document.getElementById('executeFeatureButton');
+                        if (executeBtn) {
+                            executeBtn.addEventListener('click', () => executeFeaturePrompt());
+                        }
+
+                        const projectSelectEl = document.getElementById('projectSelect');
+                        if (projectSelectEl) {
+                            projectSelectEl.addEventListener('change', () => selectProject());
+                        }
+
+                        const promptProjectSelect = document.getElementById('promptProjectSelect');
+                        if (promptProjectSelect) {
+                            promptProjectSelect.addEventListener('change', () => selectPromptProject());
+                        }
+
+                        const instructionSelect = document.getElementById('instructionSelect');
+                        if (instructionSelect) {
+                            instructionSelect.addEventListener('change', () => selectInstruction());
+                        }
+
+                        const promptTemplateSelect = document.getElementById('promptTemplateSelect');
+                        if (promptTemplateSelect) {
+                            promptTemplateSelect.addEventListener('change', () => selectPromptTemplate());
+                        }
+
+                        const sendBtn = document.getElementById('sendButton');
+                        if (sendBtn) {
+                            sendBtn.addEventListener('click', () => sendMessage());
+                        }
+
+                        const addFeatureBtn = document.getElementById('addFeatureButton');
+                        if (addFeatureBtn) {
+                            addFeatureBtn.addEventListener('click', () => addFeature());
+                        }
+
+                        const executeOnCodeBtn = document.getElementById('executeOnCodeButton');
+                        if (executeOnCodeBtn) {
+                            executeOnCodeBtn.addEventListener('click', () => executeOnCode());
+                        }
+
+                        const newChatBtn = document.getElementById('newChatButton');
+                        if (newChatBtn) {
+                            newChatBtn.addEventListener('click', () => newChat());
+                        }
+
+                        const configureApiLink = document.getElementById('configureApiLink');
+                        if (configureApiLink) {
+                            configureApiLink.addEventListener('click', (e) => {
+                                e.preventDefault();
+                                const settingsSection = document.querySelector('.settings-section');
+                                if (settingsSection) {
+                                    settingsSection.open = true;
+                                    document.getElementById('apiTokenInput')?.focus();
+                                }
+                            });
+                        }
+
+                        const saveApiTokenBtn = document.getElementById('saveApiTokenButton');
+                        if (saveApiTokenBtn) {
+                            saveApiTokenBtn.addEventListener('click', () => saveApiToken());
+                        }
+
+                        const testApiTokenBtn = document.getElementById('testApiTokenButton');
+                        if (testApiTokenBtn) {
+                            testApiTokenBtn.addEventListener('click', () => testApiToken());
+                        }
+
+                        const messageInput = document.getElementById('messageInput');
+                        if (messageInput) {
+                            messageInput.addEventListener('keypress', (e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    sendMessage();
+                                }
+                            });
+                        }
+
+                        console.log('Event listeners attached');
+                    }
+
+                    // Call setup after a tiny delay to ensure DOM is ready
+                    setTimeout(setupEventListeners, 0);
+
                     // Send ready message
+                    console.log('Sending ready message...');
                     vscode.postMessage({ type: 'ready' });
+                    console.log('Ready message sent');
 
                     function switchTab(tab) {
                         currentTab = tab;
@@ -1105,8 +1611,23 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                     }
 
                     // Feature tab functions
-                    function login() {
-                        vscode.postMessage({ type: 'login' });
+                    function login(email, password) {
+                        console.log('[Webview] Login function called for:', email);
+
+                        // Clear any previous errors
+                        const errorDiv = document.getElementById('loginError');
+                        if (errorDiv) {
+                            errorDiv.style.display = 'none';
+                            errorDiv.textContent = '';
+                        }
+
+                        // Send login message with credentials
+                        vscode.postMessage({
+                            type: 'login',
+                            email: email,
+                            password: password
+                        });
+                        console.log('[Webview] Login message sent');
                     }
 
                     function selectProject() {
@@ -1159,8 +1680,55 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                         vscode.postMessage({ type: 'newChat' });
                     }
 
+                    function saveApiToken() {
+                        const input = document.getElementById('apiTokenInput');
+                        const statusDiv = document.getElementById('apiTokenStatus');
+
+                        if (input && input.value.trim()) {
+                            console.log('[Webview] Saving API token');
+
+                            vscode.postMessage({
+                                type: 'saveApiToken',
+                                token: input.value.trim()
+                            });
+
+                            // Show success message
+                            if (statusDiv) {
+                                statusDiv.textContent = '✓ API token saved successfully';
+                                statusDiv.className = 'status-message success';
+                                statusDiv.style.display = 'block';
+
+                                // Hide after 3 seconds
+                                setTimeout(() => {
+                                    statusDiv.style.display = 'none';
+                                }, 3000);
+                            }
+
+                            // Clear input for security
+                            input.value = '';
+                        }
+                    }
+
+                    function testApiToken() {
+                        console.log('[Webview] Testing API token');
+
+                        const statusDiv = document.getElementById('apiTokenStatus');
+                        if (statusDiv) {
+                            statusDiv.textContent = 'Testing API connection...';
+                            statusDiv.className = 'status-message';
+                            statusDiv.style.display = 'block';
+                        }
+
+                        vscode.postMessage({ type: 'testApiToken' });
+                    }
+
                     function configureApiToken() {
-                        vscode.postMessage({ type: 'configureApiToken' });
+                        // Open settings section
+                        const settingsSection = document.querySelector('.settings-section');
+                        if (settingsSection) {
+                            settingsSection.open = true;
+                            document.getElementById('apiTokenInput')?.focus();
+                        }
                         return false; // Prevent link navigation
                     }
 
@@ -1241,34 +1809,157 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
 
                         switch (message.type) {
                             case 'requireLogin':
-                                document.getElementById('loginContainer').classList.add('active');
-                                document.getElementById('mainContainer').classList.add('hidden');
+                                const loginCont = document.getElementById('loginContainer');
+                                const mainCont = document.getElementById('mainContainer');
+
+                                if (loginCont) {
+                                    loginCont.classList.remove('hidden');
+                                    console.log('[Webview] Login container shown');
+                                }
+
+                                if (mainCont) {
+                                    mainCont.classList.remove('active');
+                                    mainCont.classList.add('hidden');
+                                    console.log('[Webview] Main container hidden');
+                                }
+                                break;
+
+                            case 'loginLoading':
+                                const loginBtn = document.getElementById('loginButton');
+                                const spinner = loginBtn?.querySelector('.spinner');
+                                const buttonText = loginBtn?.querySelector('.button-text');
+
+                                if (message.loading) {
+                                    loginBtn.disabled = true;
+                                    if (spinner) spinner.style.display = 'inline';
+                                    if (buttonText) buttonText.textContent = 'Logging in...';
+                                } else {
+                                    loginBtn.disabled = false;
+                                    if (spinner) spinner.style.display = 'none';
+                                    if (buttonText) buttonText.textContent = 'Login';
+                                }
+                                break;
+
+                            case 'loginError':
+                                const errorDiv = document.getElementById('loginError');
+                                if (errorDiv) {
+                                    errorDiv.textContent = message.error;
+                                    errorDiv.style.display = 'block';
+                                }
+                                break;
+
+                            case 'loginSuccess':
+                                // Clear form
+                                const emailInput = document.getElementById('emailInput');
+                                const passwordInput = document.getElementById('passwordInput');
+                                if (emailInput) emailInput.value = '';
+                                if (passwordInput) passwordInput.value = '';
+
+                                // Hide error if shown
+                                const errorMsg = document.getElementById('loginError');
+                                if (errorMsg) errorMsg.style.display = 'none';
+                                break;
+
+                            case 'resetAllState':
+                                // Clear all form inputs
+                                document.querySelectorAll('input, textarea').forEach(input => {
+                                    if (input.type !== 'submit') {
+                                        input.value = '';
+                                    }
+                                });
+
+                                // Reset dropdowns
+                                document.querySelectorAll('select').forEach(select => {
+                                    select.selectedIndex = 0;
+                                });
+
+                                // Clear chat messages
+                                const chatContainer = document.getElementById('chatMessages');
+                                if (chatContainer) {
+                                    chatContainer.innerHTML = '';
+                                }
+
+                                // Clear output
+                                const outputArea = document.getElementById('currentOutputTextarea');
+                                if (outputArea) {
+                                    outputArea.value = '';
+                                }
+
+                                // Show login screen
+                                const resetLoginContainer = document.getElementById('loginContainer');
+                                const resetMainContainer = document.getElementById('mainContainer');
+
+                                if (resetLoginContainer) {
+                                    resetLoginContainer.classList.remove('hidden');
+                                }
+
+                                if (resetMainContainer) {
+                                    resetMainContainer.classList.remove('active');
+                                    resetMainContainer.classList.add('hidden');
+                                }
+                                break;
+
+                            case 'focusLogin':
+                                const emailField = document.getElementById('emailInput');
+                                if (emailField) {
+                                    emailField.focus();
+                                }
                                 break;
 
                             case 'updateProjects':
-                                document.getElementById('loginContainer').classList.remove('active');
-                                document.getElementById('mainContainer').classList.remove('hidden');
+                                console.log('[Webview] updateProjects received:', {
+                                    projectCount: message.projects?.length,
+                                    projects: message.projects
+                                });
+
+                                const loginContainer = document.getElementById('loginContainer');
+                                const mainContainer = document.getElementById('mainContainer');
+
+                                console.log('[Webview] Containers found:', {
+                                    loginContainer: !!loginContainer,
+                                    mainContainer: !!mainContainer
+                                });
+
+                                if (loginContainer) {
+                                    loginContainer.classList.add('hidden');
+                                    console.log('[Webview] Login container hidden');
+                                }
+
+                                if (mainContainer) {
+                                    mainContainer.classList.remove('hidden'); // Remove hidden class
+                                    mainContainer.classList.add('active');    // Add active class
+                                    console.log('[Webview] Main container shown (removed hidden, added active)');
+                                }
 
                                 // Update both project dropdowns
                                 const featureSelect = document.getElementById('projectSelect');
-                                const promptSelect = document.getElementById('promptProjectSelect');
+                                const promptProjectSelect = document.getElementById('promptProjectSelect');
 
-                                featureSelect.innerHTML = '<option value="">Select a project...</option>';
-                                promptSelect.innerHTML = '<option value="">Select a project...</option>';
+                                if (featureSelect && promptProjectSelect) {
+                                    featureSelect.innerHTML = '<option value="">Select a project...</option>';
+                                    promptProjectSelect.innerHTML = '<option value="">Select a project...</option>';
 
-                                message.projects.forEach(project => {
-                                    // Add to Feature tab dropdown
-                                    const featureOption = document.createElement('option');
-                                    featureOption.value = project.id;
-                                    featureOption.textContent = project.name;
-                                    featureSelect.appendChild(featureOption);
+                                    message.projects.forEach(project => {
+                                        // Add to Feature tab dropdown
+                                        const featureOption = document.createElement('option');
+                                        featureOption.value = project.id;
+                                        featureOption.textContent = project.name;
+                                        featureSelect.appendChild(featureOption);
 
-                                    // Add to Prompt tab dropdown
-                                    const promptOption = document.createElement('option');
-                                    promptOption.value = project.id;
-                                    promptOption.textContent = project.name;
-                                    promptSelect.appendChild(promptOption);
-                                });
+                                        // Add to Prompt tab dropdown
+                                        const promptOption = document.createElement('option');
+                                        promptOption.value = project.id;
+                                        promptOption.textContent = project.name;
+                                        promptProjectSelect.appendChild(promptOption);
+                                    });
+
+                                    console.log('[Webview] Project dropdowns updated with', message.projects.length, 'projects');
+                                } else {
+                                    console.error('[Webview] Project dropdowns not found!', {
+                                        featureSelect: !!featureSelect,
+                                        promptProjectSelect: !!promptProjectSelect
+                                    });
+                                }
                                 break;
 
                             case 'updateFeatures':
@@ -1278,10 +1969,18 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                     container.innerHTML = '<div class="empty-state">No features found for this project</div>';
                                 } else {
                                     container.innerHTML = message.features.map(feature =>
-                                        \`<div class="feature-item" id="feature-\${feature.id}" onclick="selectFeature('\${feature.id}')">
+                                        \`<div class="feature-item" id="feature-\${feature.id}" data-feature-id="\${feature.id}">
                                             \${feature.title}
                                         </div>\`
                                     ).join('');
+
+                                    // Attach click handlers to feature items
+                                    container.querySelectorAll('.feature-item').forEach(item => {
+                                        item.addEventListener('click', () => {
+                                            const featureId = item.getAttribute('data-feature-id');
+                                            selectFeature(featureId);
+                                        });
+                                    });
                                 }
 
                                 document.getElementById('featurePromptTextarea').value = '';
@@ -1296,25 +1995,39 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                 break;
 
                             case 'updateInstructionTemplates':
+                                console.log('[Webview] updateInstructionTemplates received:', message.templates?.length, 'templates');
                                 const instructionSelect = document.getElementById('instructionSelect');
-                                instructionSelect.innerHTML = '<option value="">Select instruction template...</option>';
-                                message.templates.forEach(template => {
-                                    const option = document.createElement('option');
-                                    option.value = template.id;
-                                    option.textContent = template.name;
-                                    instructionSelect.appendChild(option);
-                                });
+
+                                if (instructionSelect) {
+                                    instructionSelect.innerHTML = '<option value="">Select instruction template...</option>';
+                                    message.templates.forEach(template => {
+                                        const option = document.createElement('option');
+                                        option.value = template.id;
+                                        option.textContent = template.name;
+                                        instructionSelect.appendChild(option);
+                                    });
+                                    console.log('[Webview] Instruction templates populated:', message.templates.length);
+                                } else {
+                                    console.error('[Webview] instructionSelect element not found!');
+                                }
                                 break;
 
                             case 'updatePromptTemplates':
+                                console.log('[Webview] updatePromptTemplates received:', message.templates?.length, 'templates');
                                 const promptSelect = document.getElementById('promptTemplateSelect');
-                                promptSelect.innerHTML = '<option value="">Select prompt template...</option>';
-                                message.templates.forEach(template => {
-                                    const option = document.createElement('option');
-                                    option.value = template.id;
-                                    option.textContent = template.name;
-                                    promptSelect.appendChild(option);
-                                });
+
+                                if (promptSelect) {
+                                    promptSelect.innerHTML = '<option value="">Select prompt template...</option>';
+                                    message.templates.forEach(template => {
+                                        const option = document.createElement('option');
+                                        option.value = template.id;
+                                        option.textContent = template.name;
+                                        promptSelect.appendChild(option);
+                                    });
+                                    console.log('[Webview] Prompt templates populated:', message.templates.length);
+                                } else {
+                                    console.error('[Webview] promptTemplateSelect element not found!');
+                                }
                                 break;
 
                             case 'promptTemplateSelected':
@@ -1324,9 +2037,9 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                 break;
 
                             case 'addChatMessage':
-                                const chatContainer = document.getElementById('chatContainer');
-                                if (chatContainer.querySelector('.empty-state')) {
-                                    chatContainer.innerHTML = '';
+                                const chatContainerEl = document.getElementById('chatContainer');
+                                if (chatContainerEl && chatContainerEl.querySelector('.empty-state')) {
+                                    chatContainerEl.innerHTML = '';
                                 }
 
                                 const msgDiv = document.createElement('div');
@@ -1335,8 +2048,10 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                                     <div class="chat-role">\${message.message.role === 'user' ? 'You' : 'Assistant'}</div>
                                     <div>\${message.message.content}</div>
                                 \`;
-                                chatContainer.appendChild(msgDiv);
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                                if (chatContainerEl) {
+                                    chatContainerEl.appendChild(msgDiv);
+                                    chatContainerEl.scrollTop = chatContainerEl.scrollHeight;
+                                }
                                 break;
 
                             case 'clearChat':
@@ -1354,6 +2069,51 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
 
                             case 'apiTokenConfigured':
                                 document.getElementById('apiWarning').style.display = 'none';
+                                break;
+
+                            case 'hideApiWarning':
+                                const warningEl = document.getElementById('apiWarning');
+                                if (warningEl) {
+                                    warningEl.style.display = 'none';
+                                }
+                                break;
+
+                            case 'apiTokenTestResult':
+                                const statusDiv = document.getElementById('apiTokenStatus');
+                                if (statusDiv) {
+                                    statusDiv.textContent = message.message;
+                                    statusDiv.className = 'status-message ' + (message.success ? 'success' : 'error');
+                                    statusDiv.style.display = 'block';
+
+                                    // Hide after 5 seconds if successful
+                                    if (message.success) {
+                                        setTimeout(() => {
+                                            statusDiv.style.display = 'none';
+                                        }, 5000);
+                                    }
+                                }
+                                break;
+
+                            case 'showApiError':
+                                // Show API error banner in Prompt tab
+                                const apiWarningBanner = document.getElementById('apiWarning');
+                                if (apiWarningBanner) {
+                                    apiWarningBanner.innerHTML = '⚠️ ' + message.message + ' <a href="#" id="configureApiLinkError">Configure API Settings</a>';
+                                    apiWarningBanner.style.display = 'block';
+
+                                    // Re-attach click handler
+                                    const newLink = apiWarningBanner.querySelector('#configureApiLinkError');
+                                    if (newLink) {
+                                        newLink.addEventListener('click', (e) => {
+                                            e.preventDefault();
+                                            const settingsSection = document.querySelector('.settings-section');
+                                            if (settingsSection) {
+                                                settingsSection.open = true;
+                                                document.getElementById('apiTokenInput')?.focus();
+                                            }
+                                        });
+                                    }
+                                }
                                 break;
                         }
                     });

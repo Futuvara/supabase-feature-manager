@@ -57,7 +57,22 @@
         "command": "my-first-extension.refreshFeatures",
         "title": "Refresh Features"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Supabase Features",
+      "properties": {
+        "supabaseFeatures.autoLogin": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically login with saved credentials when VS Code starts"
+        },
+        "supabaseFeatures.apiBaseUrl": {
+          "type": "string",
+          "default": "https://requ.futuvara.com/api",
+          "description": "Requirements Management API base URL"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
