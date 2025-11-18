@@ -1,5 +1,15 @@
 import * as vscode from 'vscode';
 import axios, { AxiosInstance } from 'axios';
+import {
+    RecordMessageRequest,
+    RecordMessageResponse,
+    EnhancePromptRequest,
+    EnhancePromptResponse,
+    GetThreadRequest,
+    GetThreadResponse,
+    ListThreadsRequest,
+    ListThreadsResponse
+} from './types/conversations';
 
 export interface PromptResponse {
     success: boolean;
@@ -237,6 +247,248 @@ export class PromptApiClient {
         } catch (error: any) {
             console.error('Failed to fetch projects:', error);
             return [];
+        }
+    }
+
+    // ===== Claude Conversation API Methods =====
+
+    /**
+     * Record a message to a conversation thread
+     * @param params Message parameters including content, role, and optional thread ID
+     * @returns Response with message ID, thread ID, and weight
+     */
+    public async recordMessage(params: RecordMessageRequest): Promise<RecordMessageResponse> {
+        try {
+            console.log('[PromptApiClient] Recording message:', {
+                threadId: params.threadId,
+                role: params.role,
+                contentLength: params.content.length,
+                wasEnhanced: params.wasEnhanced
+            });
+
+            const response = await this.api.post('/v1/conversations/record', params);
+
+            console.log('[PromptApiClient] Record response:', response.status, response.data);
+
+            return response.data;
+        } catch (error: any) {
+            console.error('[PromptApiClient] Record message error:', {
+                status: error.response?.status,
+                data: error.response?.data,
+                message: error.message
+            });
+
+            if (error.response) {
+                return {
+                    success: false,
+                    message_id: '',
+                    thread_id: params.threadId || '',
+                    weight: 0,
+                    embedding_queued: false,
+                    error: error.response.data?.error || 'API Error',
+                    message: error.response.data?.message || `HTTP ${error.response.status}`
+                };
+            }
+
+            return {
+                success: false,
+                message_id: '',
+                thread_id: params.threadId || '',
+                weight: 0,
+                embedding_queued: false,
+                error: 'Network Error',
+                message: error.message || 'Failed to connect to API'
+            };
+        }
+    }
+
+    /**
+     * Enhance a prompt using RAG (Retrieval-Augmented Generation)
+     * Queries past conversations and current thread for relevant context
+     * @param params Enhancement parameters including prompt and optional thread/project ID
+     * @returns Enhanced prompt with context sources
+     */
+    public async enhancePrompt(params: EnhancePromptRequest): Promise<EnhancePromptResponse> {
+        try {
+            console.log('[PromptApiClient] Enhancing prompt:', {
+                promptLength: params.prompt.length,
+                threadId: params.threadId,
+                projectId: params.projectId,
+                topK: params.topK || 5
+            });
+
+            const response = await this.api.post('/v1/conversations/enhance', params);
+
+            console.log('[PromptApiClient] Enhancement response:', {
+                status: response.status,
+                sourcesCount: response.data.context_sources?.length,
+                processingTime: response.data.processing_time_ms
+            });
+
+            return response.data;
+        } catch (error: any) {
+            console.error('[PromptApiClient] Enhancement error:', {
+                status: error.response?.status,
+                data: error.response?.data,
+                message: error.message
+            });
+
+            if (error.response) {
+                return {
+                    success: false,
+                    enhanced_prompt: params.prompt, // Fallback to original
+                    original_prompt: params.prompt,
+                    context_sources: [],
+                    processing_time_ms: 0,
+                    embedding_model: '',
+                    enhancement_model: '',
+                    error: error.response.data?.error || 'Enhancement Error',
+                    message: error.response.data?.message || `HTTP ${error.response.status}`
+                };
+            }
+
+            return {
+                success: false,
+                enhanced_prompt: params.prompt, // Fallback to original
+                original_prompt: params.prompt,
+                context_sources: [],
+                processing_time_ms: 0,
+                embedding_model: '',
+                enhancement_model: '',
+                error: 'Network Error',
+                message: error.message || 'Failed to connect to API'
+            };
+        }
+    }
+
+    /**
+     * Get a conversation thread with its messages
+     * @param params Request parameters including thread ID and pagination
+     * @returns Thread information and messages
+     */
+    public async getThread(params: GetThreadRequest): Promise<GetThreadResponse> {
+        try {
+            const queryParams: any = {
+                page: params.page || 1,
+                limit: params.limit || 50
+            };
+
+            if (params.include_enhanced) {
+                queryParams.include_enhanced = true;
+            }
+
+            console.log('[PromptApiClient] Getting thread:', params.threadId);
+
+            const response = await this.api.get(`/v1/conversations/${params.threadId}`, {
+                params: queryParams
+            });
+
+            console.log('[PromptApiClient] Get thread response:', {
+                status: response.status,
+                messageCount: response.data.messages?.length
+            });
+
+            return response.data;
+        } catch (error: any) {
+            console.error('[PromptApiClient] Get thread error:', {
+                status: error.response?.status,
+                data: error.response?.data,
+                message: error.message
+            });
+
+            if (error.response) {
+                return {
+                    success: false,
+                    thread: {
+                        id: params.threadId,
+                        title: '',
+                        created_at: '',
+                        updated_at: '',
+                        message_count: 0
+                    },
+                    messages: [],
+                    total: 0,
+                    page: params.page || 1,
+                    limit: params.limit || 50,
+                    has_more: false,
+                    error: error.response.data?.error || 'API Error',
+                    message: error.response.data?.message || `HTTP ${error.response.status}`
+                };
+            }
+
+            return {
+                success: false,
+                thread: {
+                    id: params.threadId,
+                    title: '',
+                    created_at: '',
+                    updated_at: '',
+                    message_count: 0
+                },
+                messages: [],
+                total: 0,
+                page: params.page || 1,
+                limit: params.limit || 50,
+                has_more: false,
+                error: 'Network Error',
+                message: error.message || 'Failed to connect to API'
+            };
+        }
+    }
+
+    /**
+     * List conversation threads for the current user
+     * @param params Request parameters including optional project filter and pagination
+     * @returns List of thread summaries
+     */
+    public async listThreads(params?: ListThreadsRequest): Promise<ListThreadsResponse> {
+        try {
+            const queryParams: any = {
+                limit: params?.limit || 20,
+                offset: params?.offset || 0
+            };
+
+            if (params?.projectId) {
+                queryParams.project_id = params.projectId;
+            }
+
+            console.log('[PromptApiClient] Listing threads:', queryParams);
+
+            const response = await this.api.get('/v1/conversations', {
+                params: queryParams
+            });
+
+            console.log('[PromptApiClient] List threads response:', {
+                status: response.status,
+                threadCount: response.data.threads?.length,
+                total: response.data.total
+            });
+
+            return response.data;
+        } catch (error: any) {
+            console.error('[PromptApiClient] List threads error:', {
+                status: error.response?.status,
+                data: error.response?.data,
+                message: error.message
+            });
+
+            if (error.response) {
+                return {
+                    success: false,
+                    threads: [],
+                    total: 0,
+                    error: error.response.data?.error || 'API Error',
+                    message: error.response.data?.message || `HTTP ${error.response.status}`
+                };
+            }
+
+            return {
+                success: false,
+                threads: [],
+                total: 0,
+                error: 'Network Error',
+                message: error.message || 'Failed to connect to API'
+            };
         }
     }
 }

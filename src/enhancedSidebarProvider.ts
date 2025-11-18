@@ -542,14 +542,36 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                 return; // User cancelled
             }
 
-            // Copy feature to clipboard (RLS prevents direct insert)
-            const featureText = `Title: ${title}\n\nDescription:\n${content}`;
-            await vscode.env.clipboard.writeText(featureText);
+            // Get current user ID for RLS
+            const user = this.authService.currentUser;
+            if (!user) {
+                vscode.window.showErrorMessage('User not authenticated');
+                return;
+            }
 
-            vscode.window.showInformationMessage(
-                `Feature content copied to clipboard! Features are automatically created when you improve prompts.`,
-                'OK'
-            );
+            // Insert ONE feature into Supabase with user_id for RLS
+            const { data, error } = await this.supabaseService.getSupabaseClient()
+                .from('features')
+                .insert({
+                    project_id: this.currentProjectId,
+                    user_id: user.id,
+                    title: title.trim(),
+                    description: content.trim(),
+                    is_used: false
+                })
+                .select()
+                .single();
+
+            if (error) {
+                console.error('[EnhancedSidebarProvider] Error adding feature:', error);
+                vscode.window.showErrorMessage(`Failed to add feature: ${error.message}`);
+                return;
+            }
+
+            vscode.window.showInformationMessage(`Feature "${title}" added successfully!`);
+
+            // Reload features to show the new one
+            await this.loadFeatures(this.currentProjectId);
 
         } catch (error: any) {
             console.error('[EnhancedSidebarProvider] Exception adding feature:', error);
@@ -1429,6 +1451,7 @@ export class EnhancedSidebarProvider implements vscode.WebviewViewProvider {
                     <div class="tabs-container">
                         <button class="tab active" id="featureTab">Feature</button>
                         <button class="tab" id="promptTab">Prompt</button>
+                        <button class="tab" id="claudeTab">Claude</button>
                     </div>
 
                     <!-- Feature Tab -->

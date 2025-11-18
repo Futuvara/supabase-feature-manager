@@ -1,12 +1,12 @@
 {
-  "name": "supabase-feature-manager",
-  "displayName": "Supabase Feature Manager",
-  "description": "Manage and execute project features from Supabase with Claude Code integration and AI-powered prompt improvements",
+  "name": "requ",
+  "displayName": "Requ",
+  "description": "AI-powered feature and prompt management with Gemini, RAG, and Claude Code integration",
   "version": "1.0.0",
-  "publisher": "your-publisher-name",
+  "publisher": "Futuvara",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/supabase-feature-manager"
+    "url": "https://github.com/Futuvara/supabase-feature-manager"
   },
   "engines": {
     "vscode": "^1.74.0"
